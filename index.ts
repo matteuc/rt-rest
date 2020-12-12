@@ -1,6 +1,9 @@
 import { Server } from 'http'
 import cookieSession from 'cookie-session'
 import sharedSession from 'express-socket.io-session'
+import socketio from 'socket.io'
+
+const DEFAULT_NAMESPACE = "/"
 
 type RestSocketOptions = {
     maxByteSize?: number
@@ -19,6 +22,30 @@ type RestSocketMiddleware = (req: RestSocketRequest, res: RestSocketResponse, ne
 
 type RestSocketController = (req: RestSocketRequest, res: RestSocketResponse) => any
 
+type RestSocketRouteController = {
+    path: string,
+    controller: RestSocketController
+}
+
+type RestSocketControllerMap = {
+    [k in RequestType]: Array<RestSocketRouteController>
+}
+
+type RestSocketMiddlewareNamespaceMap = {
+    [namespace: string]: Array<RestSocketMiddleware>
+}
+
+type RestSocketControllerNamespaceMap = {
+    [namespace: string]: RestSocketControllerMap
+}
+
+enum RequestType {
+    GET = "get",
+    POST = "post",
+    PUT = "put",
+    DELETE = "delete"
+}
+
 // TODO
 // Some entity that processes a request and passes it through middleware, which only proceeds if 'next()' is called without error
 // If called with error, return to client with error code
@@ -27,8 +54,10 @@ type RestSocketController = (req: RestSocketRequest, res: RestSocketResponse) =>
 // Some function that is used to define an HTTP request (i.e. 'post()') and correctly passes the incoming request to middlewares under the specified route
 
 class RestSocket {
-    socketIo: SocketIO.Server
+    socketIo: socketio.Server
     session?: ReturnType<typeof cookieSession>
+    middlewareMap: RestSocketMiddlewareNamespaceMap
+    controllerMap: RestSocketControllerNamespaceMap
 
     /**
      * 
@@ -49,14 +78,54 @@ class RestSocket {
             console.info(`REST Socket listening on port ${port}!`)
         }
 
+        this.middlewareMap = {
+            [DEFAULT_NAMESPACE]: []
+        } as RestSocketMiddlewareNamespaceMap
+
+        this.controllerMap = {
+            [DEFAULT_NAMESPACE]: Object.keys(RequestType).reduce((all, type) => ({
+                ...all,
+                [type]: []
+            }), {}) as RestSocketControllerMap
+        }
+
     }
+
+    /**
+        Middleware Utility Methods
+        --------------------------
+     */
+
+    use(middlewares: Array<RestSocketMiddleware>, namespace = DEFAULT_NAMESPACE) {
+        this.middlewareMap[namespace].push(...middlewares)
+    }
+
+    _route(type: RequestType, path: string, controller: RestSocketController, namespace = DEFAULT_NAMESPACE) {
+        this.controllerMap[namespace][type].push({
+            path,
+            controller
+        })
+    }
+
+    /**
+    * TODO
+    */
+    withAuth() {
+
+        return this
+    }
+
+    /**
+        Instance Creator Methods
+        ------------------------
+     */
 
     /**
      * 
      * @param port 
      * @param options 
      */
-    static standalone(port: number, options: RestSocketOptions = {}) {
+    static fromPort(port: number, options: RestSocketOptions = {}) {
         if (!port) {
             throw new Error('Please provide an available port number.')
         }
@@ -64,17 +133,12 @@ class RestSocket {
         return new RestSocket(port, undefined, options)
     }
 
-    use(middleware: RestSocketMiddleware) {
-
-        return this
-    }
-
     /**
      * 
      * @param server 
      * @param options 
      */
-    static withServer(server: Server, options: RestSocketOptions = {}) {
+    static fromServer(server: Server, options: RestSocketOptions = {}) {
         if (!server) {
             throw new Error('Please provide a server instance.')
         }
@@ -100,10 +164,25 @@ class RestSocket {
         return this
     }
 
-    withAuth() {
+    /**
+        Route Controller Methods
+        ------------------------
+     */
 
-        return this
+    get(path: string, controller: RestSocketController, namespace?: string) {
+        return this._route(RequestType.GET, path, controller, namespace)
+    }
+
+    post(path: string, controller: RestSocketController, namespace?: string) {
+        return this._route(RequestType.POST, path, controller, namespace)
+    }
+
+    put(path: string, controller: RestSocketController, namespace?: string) {
+        return this._route(RequestType.PUT, path, controller, namespace)
+    }
+
+    delete(path: string, controller: RestSocketController, namespace?: string) {
+        return this._route(RequestType.DELETE, path, controller, namespace)
     }
 
 }
-
