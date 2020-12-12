@@ -17,14 +17,14 @@ class RestSocketResponse {
 
 type RestSocketMiddleware = (req: RestSocketRequest, res: RestSocketResponse, next?: RestSocketNext) => any
 
+type RestSocketController = (req: RestSocketRequest, res: RestSocketResponse) => any
+
 // TODO
 // Some entity that processes a request and passes it through middleware, which only proceeds if 'next()' is called without error
 // If called with error, return to client with error code
 
 // TODO 
 // Some function that is used to define an HTTP request (i.e. 'post()') and correctly passes the incoming request to middlewares under the specified route
-
-
 
 class RestSocket {
     socketIo: SocketIO.Server
@@ -102,9 +102,8 @@ class RestSocket {
 
     withAuth() {
 
-        this.use(() => { })
-
         return this
     }
 
 }
+
