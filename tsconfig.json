@@ -1,12 +1,12 @@
 {
     "compilerOptions": {
-        "module": "commonjs",
-        "esModuleInterop": true,
-        "target": "es6",
-        "moduleResolution": "node",
-        "sourceMap": true,
+      "module": "commonjs",
+      "declaration": true,
+      "esModuleInterop": true,
+      "target": "es2019",
+      "moduleResolution": "node",
+      "sourceMap": true,
     },
-    "lib": [
-        "es2015"
-    ]
-}
+    "lib": ["esnext"]
+  }
+  

@@ -1,109 +1,214 @@
-import socketio from 'socket.io'
-import { RequestHandler, Request, Response, NextFunction } from 'express'
-import { ExtendedError } from 'socket.io/dist/namespace'
-import { RequestType, RestSocketControllerMap, RestSocketControllerNamespaceMap, RestSocketMiddleware, RestSocketOptions, RouteConfig } from './types'
-import { Server } from 'http'
+import {
+    RequestPayload,
+    RequestType,
+    RestSocketControllerMap,
+    RestSocketMiddlewareSet,
+    RestSocketMiddleware,
+    RestSocketOptions,
+    RestSocketRequestData,
+    RestSocketNext,
+    RestSocketPathHandler,
+    MiddlewareQueueItem,
+    RestSocketResponsePayload,
+    ConnectionType
+} from './types'
+import {
+    Server as HttpServer,
+    createServer
+} from 'http'
+import { match } from 'node-match-path'
+import { URLSearchParams } from 'url'
+import { RequestHandler } from 'express'
 
-export class RestSocketNamespaceContext {
-    _ref: RestSocket
-    namespaces: Array<string>
 
-    constructor(ref: RestSocket, namespaces: Array<string>) {
-        this._ref = ref;
-        this.namespaces = namespaces;
-    }
+/**
+ * Constants
+ */
 
-    use(...middlewares: Array<RestSocketMiddleware>): void {
-        this._ref._addMiddleware(middlewares, this.namespaces)
-    }
-
-    get(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        this._ref._route(RequestType.GET, { path, namespaces: this.namespaces }, ...controllers)
-    }
-
-    post(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        this._ref._route(RequestType.POST, { path, namespaces: this.namespaces }, ...controllers)
-    }
-
-    put(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        this._ref._route(RequestType.PUT, { path, namespaces: this.namespaces }, ...controllers)
-    }
-
-    delete(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        this._ref._route(RequestType.DELETE, { path, namespaces: this.namespaces }, ...controllers)
-    }
+const Constants = {
+    DEFAULT_NAMESPACE: "/",
+    MATCH_ALL: "*",
+    responseEvent: (id: string) => `${id}-response`,
+    receivedEvent: (id: string) => `${id}-received`
 }
 
-export class RestSocket {
-    static DEFAULT_NAMESPACE = "/"
-    static parseOptions = (options?: RestSocketOptions): {
-        maxHttpBufferSize: number
-    } => ({
-        maxHttpBufferSize: options?.maxByteSize
-    })
+export class RestSocketRouter {
 
-    socketIo: socketio.Server
-    controllerMap: RestSocketControllerNamespaceMap
-    port: number
+    namespaces: Array<string>
+    middlewareChain: RestSocketMiddlewareSet
 
-    /**
-     * 
-     * @param port 
-     * @param server 
-     * @param options 
-     */
-    constructor(port?: number, server?: Server, options?: RestSocketOptions) {
+    constructor(namespaces: Array<string> = []) {
+        this.namespaces = namespaces;
 
-        if (!port) {
-            throw new Error('Please provide a port to create a RestSocket instance.')
-        }
-
-        this.port = port
-
-        if (server) {
-            this.socketIo = require('socket.io')(server, RestSocket.parseOptions(options))
-        } else {
-            this.socketIo = require('socket.io')(port, RestSocket.parseOptions(options))
-        }
-
-        this.controllerMap = {
-            [RestSocket.DEFAULT_NAMESPACE]:
-                Object.keys(RequestType)
-                    .reduce((all, type) => ({
-                        ...all,
-                        [type]: []
-                    }), {}) as RestSocketControllerMap
-        }
-
+        this.middlewareChain = []
     }
 
     /**
         Private Utility Methods
         --------------------------
     */
-    _route(type: RequestType, config: RouteConfig, ...controllers: Array<RestSocketMiddleware>): void {
-        const { path, namespaces = [] } = config
 
-        const allNamespaces = [RestSocket.DEFAULT_NAMESPACE].concat(namespaces)
+    /**
+     * NOT USED DIRECTLY
+     */
+    _useRoute(type: RequestType, pathTemplate: string, ...controllers: Array<RestSocketMiddleware>): void {
 
-        for (const ns of allNamespaces) {
-            this.controllerMap[ns][type].push({
-                path,
-                controllers
-            })
+        this.middlewareChain.push({
+            namespaces: this.namespaces.length ?
+                this.namespaces : [Constants.DEFAULT_NAMESPACE],
+            pathTemplate,
+            middlewares: controllers,
+            isController: true,
+            method: type
+        })
+    }
+
+    /**
+     * NOT USED DIRECTLY
+     */
+    _addMiddleware(pathTemplate: string, ...middlewares: Array<RestSocketMiddleware>): void {
+
+        this.middlewareChain.push({
+            namespaces: this.namespaces.length ?
+                this.namespaces : [Constants.DEFAULT_NAMESPACE],
+            pathTemplate,
+            middlewares,
+            isController: false
+        })
+
+    }
+
+    /**
+     * 
+     * @param pathOrMiddleware 
+     * @param middlewares 
+     * @example
+     * 
+     * const router = require('rt-rest').Router()
+     * 
+     * router.use('/api', (req, res, next) => { ... })
+     * 
+     * router.use((req, res, next) => { ... })
+     */
+    use(
+        pathOrMiddleware: string | RestSocketMiddleware,
+        ...middlewares: Array<RestSocketMiddleware>
+    ): void {
+        if (typeof pathOrMiddleware === 'string') {
+            this._addMiddleware(pathOrMiddleware, ...middlewares)
+        } else {
+            this._addMiddleware(Constants.MATCH_ALL, ...[pathOrMiddleware].concat(middlewares))
         }
+
+        return;
     }
 
-    _wrapMiddleware(middleware: RequestHandler): (socket: socketio.Socket, next: (err?: ExtendedError) => void) => void {
-        return (socket: socketio.Socket, next: (err?: ExtendedError) => void) =>
-            middleware(socket.request as Request, {} as Response, next as NextFunction)
+    /**
+     * 
+     * @param pathTemplate 
+     * @param controllers 
+     * 
+     * const router = require('rt-rest').Router()
+     * 
+     * router.get('/posts', (req, res) => { ... })
+     */
+    get(pathTemplate: string, ...controllers: Array<RestSocketMiddleware>): void {
+        this._useRoute(RequestType.GET, pathTemplate, ...controllers)
     }
 
-    _addMiddleware(middlewares: Array<RestSocketMiddleware>, namespaces = []): void {
-        namespaces.concat(RestSocket.DEFAULT_NAMESPACE).forEach((namespace) => {
-            const wrappedMiddlewares = middlewares.map(m => this._wrapMiddleware(m))
+    /**
+     * 
+     * @param pathTemplate 
+     * @param controllers 
+     * 
+     * const router = require('rt-rest').Router()
+     * 
+     * router.post('/posts', (req, res) => { ... })
+     */
+    post(pathTemplate: string, ...controllers: Array<RestSocketMiddleware>): void {
+        this._useRoute(RequestType.POST, pathTemplate, ...controllers)
+    }
 
-            wrappedMiddlewares.forEach(wm => this.socketIo.of(namespace).use(wm))
+    /**
+     * 
+     * @param pathTemplate 
+     * @param controllers 
+     * 
+     * const router = require('rt-rest').Router()
+     * 
+     * router.put('/posts/:id', (req, res) => { ... })
+     */
+    put(pathTemplate: string, ...controllers: Array<RestSocketMiddleware>): void {
+        this._useRoute(RequestType.PUT, pathTemplate, ...controllers)
+    }
+
+    /**
+     * 
+     * @param pathTemplate 
+     * @param controllers 
+     * 
+     * const router = require('rt-rest').Router()
+     * 
+     * router.delete('/posts/:id', (req, res) => { ... })
+     */
+    delete(pathTemplate: string, ...controllers: Array<RestSocketMiddleware>): void {
+        this._useRoute(RequestType.DELETE, pathTemplate, ...controllers)
+    }
+}
+
+export class RestSocketServer extends RestSocketRouter {
+
+    static parseOptions = (options?: RestSocketOptions): {
+        maxHttpBufferSize: RestSocketOptions['maxByteSize'],
+        cors: RestSocketOptions['cors']
+    } => ({
+        maxHttpBufferSize: options?.maxByteSize,
+        cors: options?.cors
+    })
+
+    /**
+     * Class fields
+     */
+    port: number
+    httpServer: HttpServer
+    socketIo: SocketIO.Server & {
+        httpServer: HttpServer
+    }
+
+    constructor(port?: number, server?: HttpServer, options?: RestSocketOptions) {
+        super([])
+
+        if (!port && !server) {
+            throw new Error('Please provide a port or Server to create a RestSocketServer instance.')
+        }
+
+        if (server) {
+            this.socketIo = require('socket.io')(server, RestSocketServer.parseOptions(options))
+            this.httpServer = server
+        } else {
+            this.port = port
+            this.httpServer = createServer()
+            this.socketIo = require('socket.io')(this.httpServer, RestSocketServer.parseOptions(options))
+        }
+
+        this.socketIo.httpServer.on('listening', () => {
+            this._subscribeToRequests()
+        })
+
+    }
+
+    /**
+     * @example
+     * 
+     * const app = require('rt-rest')(3030)
+     * 
+     * app.listen()
+     */
+    listen(): void {
+        if (this.httpServer.listening) return;
+
+        this.httpServer.listen(this.port, () => {
+            console.info(`Server listening on ${this.port}!`)
         })
     }
 
@@ -112,12 +217,49 @@ export class RestSocket {
         --------------------------
      */
 
-    use(...middlewares: Array<RequestHandler>): void {
-        this._addMiddleware(middlewares)
+    _combineRouter(path: string, router: RestSocketRouter): void {
+        this.middlewareChain.push(...router.middlewareChain.map(m => ({
+            ...m,
+            pathTemplate: path + m.pathTemplate
+        })))
     }
+    /**
+     * 
+     * @param middlewares 
+     * @example
+     * 
+     * const app = require('rt-rest')(3030)
+     * 
+     * app.use((req, res, next) => { ... })
+     * 
+     * app.use('/api', (req, res, next) => { ... })
+     * 
+     * const router = require('rt-rest').Router()
+     * 
+     * app.use('/api', router)
+     * 
+     */
+    use(
+        path: string | RestSocketMiddleware,
+        router?: RestSocketRouter | RestSocketMiddleware,
+        ...middlewares: Array<RestSocketMiddleware>
+    ): void {
 
-    of(...namespaces: Array<string>): RestSocketNamespaceContext {
-        return new RestSocketNamespaceContext(this, namespaces)
+        if (typeof path === 'string' && router instanceof RestSocketRouter) {
+            this._combineRouter(path, router)
+        }
+
+        else if (typeof path === 'string' && typeof router === 'function') {
+            // Add middleware
+            this._addMiddleware(path, ...[router].concat(middlewares))
+        }
+
+        else if (typeof path === 'function') {
+            // Add middleware
+            this._addMiddleware(Constants.MATCH_ALL, ...[path].concat(middlewares))
+        }
+
+        return;
     }
 
     /**
@@ -125,48 +267,227 @@ export class RestSocket {
         ------------------------
      */
 
-    static fromPort(port: number, options: RestSocketOptions = {}): RestSocket {
+    /**
+     * NOT USED DIRECTLY
+     */
+    static _fromPort(port: number, options: RestSocketOptions = {}): RestSocketServer {
         if (!port) {
             throw new Error('Please provide an available port number.')
         }
 
-        return new RestSocket(port, undefined, options)
+        return new RestSocketServer(port, undefined, options)
     }
 
-    static fromServer(server: Server, options: RestSocketOptions = {}): RestSocket {
+    /**
+     * NOT USED DIRECTLY
+     */
+    static _fromServer(server: HttpServer, options: RestSocketOptions = {}): RestSocketServer {
         if (!server) {
             throw new Error('Please provide a server instance.')
         }
 
-        return new RestSocket(undefined, server, options)
+        return new RestSocketServer(undefined, server, options)
     }
 
     /**
-        Route Controller Methods
-        ------------------------
+     * NOT USED DIRECTLY
      */
 
-    get(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        return this._route(RequestType.GET, { path }, ...controllers)
-    }
+    _subscribeToRequests(): void {
 
-    post(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        return this._route(RequestType.POST, { path }, ...controllers)
-    }
+        this.socketIo.on('connection', (socket) => {
+            console.log(socket.id)
+            socket.on(ConnectionType.REQUEST, (
+                { method, requestId, path, payload, attachments }: RequestPayload) => {
 
-    put(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        return this._route(RequestType.PUT, { path }, ...controllers)
-    }
+                // Acknowledge request was received
+                socket.emit(Constants.receivedEvent(requestId))
 
-    delete(path: string, ...controllers: Array<RestSocketMiddleware>): void {
-        return this._route(RequestType.DELETE, { path }, ...controllers)
+                const namespace = socket.nsp.name
+
+                const res = new RestSocketResponse(socket,
+                    (data: RestSocketResponsePayload) => {
+                        socket.emit(Constants.responseEvent(requestId), data, null)
+                    })
+
+                // Determine matching controllers 
+                const controllerChain = this.middlewareChain
+                    .filter(h =>
+                        h.isController &&
+                        h.namespaces.includes(namespace) &&
+                        match(h.pathTemplate, path).matches &&
+                        h.method === method
+                    )
+
+                /// Handle No matching routes
+                if (!controllerChain.length) {
+                    console.info('No matching routes')
+
+                    // Tell user no route found
+                    res.status(404).json({
+                        message: 'No matching routes.'
+                    });
+
+                    return;
+                }
+
+                /**
+                 * Run middleware if...
+                 * 
+                 * It matches to all routes
+                 * 
+                 * OR
+                 * 
+                 * Matches exactly (route middleware)
+                 * 
+                 * Matches prefix (non-route middleware)
+                 * 
+                 * AND 
+                 * 
+                 * This handler is also used for client's namespace
+                 * 
+                 */
+                const handlers = this.middlewareChain
+                    .filter(h => {
+                        const matchesPath = (
+                            h.pathTemplate === Constants.MATCH_ALL ||
+                                h.isController ?
+                                match(h.pathTemplate, path).matches
+                                : path.startsWith(h.pathTemplate)
+                        )
+
+                        return h.namespaces.includes(namespace) && matchesPath
+                    })
+
+                // Flatten list of each route's middleware chain to one big list
+                const middlewareQueue: Array<MiddlewareQueueItem> =
+                    handlers.map((h) =>
+                        h.middlewares.map(m => ({
+                            isController: h.isController,
+                            pathTemplate: h.pathTemplate,
+                            handler: m
+                        }))
+                    ).flat()
+
+                const req = new RestSocketRequest({
+                    namespace,
+                    connectionId: socket.id,
+                    path,
+                    rooms: Object.keys(socket.rooms),
+                    params: {},
+                    session: socket.request.session || {},
+                    headers: socket.handshake.headers,
+                    method,
+                    id: requestId,
+                    body: payload,
+                    attachments: attachments.map(a => Buffer.from(a))
+                })
+
+                const processMiddleware = (req: RestSocketRequest, res: RestSocketResponse, item: MiddlewareQueueItem) => {
+                    const next: RestSocketNext = (e) => {
+                        if (e) {
+                            // Log Error
+                            console.error('NEXT CALLED WITH ERR', e)
+                            // Send an error back to the client
+                            res.status(404).json({
+                                message: e
+                            })
+                            return;
+                        }
+
+                        if (middlewareQueue.length > 0) {
+                            processMiddleware(req, res, middlewareQueue.shift())
+                        }
+                    }
+
+                    // Calculate params for current handler
+                    req.params = (
+                        item.isController ?
+                            match(item.pathTemplate, req.path).params :
+                            {}
+                    )
+
+                    item.handler(req, res, next)
+
+                }
+
+                // Process all matching middleware
+                // Catch any errors
+                try {
+                    processMiddleware(req, res, middlewareQueue.shift())
+                } catch (e) {
+                    res.status(500).json({
+                        message: e.message
+                    })
+                }
+
+            })
+
+        })
     }
 
 }
 
-export class RestSocketRequest {
+export class RestSocketRequest<T = Record<string, unknown>> {
+    namespace: SocketIO.Namespace['name']
+    connectionId: SocketIO.Socket['id']
+    path: string
+    rooms: Array<string>
+    params: ReturnType<typeof match>['params']
+    session: Record<string, unknown>
+    headers: SocketIO.Handshake['headers']
+    method: RequestType
+    id: string
+    body: T
+    attachments: Array<Buffer>
+    search: URLSearchParams
+
+    constructor(data: RestSocketRequestData<T>) {
+        Object.keys(data).forEach(k => this[k] = data[k])
+
+        this.search = new URLSearchParams(this.path)
+    }
+
+    param(p: string): string | undefined {
+        return this.params[p]
+    }
+
+    query(q: string): string | undefined {
+        return this.search.get(q)
+    }
 
 }
+
 export class RestSocketResponse {
+    socket: SocketIO.Socket
+    done: (data: RestSocketResponsePayload) => void
+
+    constructor(
+        socket: RestSocketResponse['socket'],
+        done: RestSocketResponse['done']
+    ) {
+        this.done = done
+        this.socket = socket
+    }
+
+    end(): void {
+        return;
+    }
+
+    json(data: Record<string, unknown>): void {
+        return;
+    }
+
+    status(code: number): RestSocketResponse {
+        return this;
+    }
+
+    cookie(): RestSocketResponse {
+        return;
+    }
+
+    clearCookie(): RestSocketResponse {
+        return;
+    }
 
 }
