@@ -6,6 +6,8 @@ const rt = server(3050)
 const controller: RestSocketMiddleware = (req, res, next) => {
     console.log('controller', { change: req.session })
 
+    res.status(404).json({})
+
     return
 }
 const mainMiddleware: RestSocketMiddleware = (req, res, next) => {

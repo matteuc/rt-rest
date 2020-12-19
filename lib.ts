@@ -1,13 +1,11 @@
 import {
     RequestPayload,
     RequestType,
-    RestSocketControllerMap,
     RestSocketMiddlewareSet,
     RestSocketMiddleware,
     RestSocketOptions,
     RestSocketRequestData,
     RestSocketNext,
-    RestSocketPathHandler,
     MiddlewareQueueItem,
     RestSocketResponsePayload,
     ConnectionType
@@ -18,8 +16,6 @@ import {
 } from 'http'
 import { match } from 'node-match-path'
 import { URLSearchParams } from 'url'
-import { RequestHandler } from 'express'
-
 
 /**
  * Constants
@@ -296,7 +292,7 @@ export class RestSocketServer extends RestSocketRouter {
     _subscribeToRequests(): void {
 
         this.socketIo.on('connection', (socket) => {
-            console.log(socket.id)
+            console.log('Client connected: ', socket.id)
             socket.on(ConnectionType.REQUEST, (
                 { method, requestId, path, payload, attachments }: RequestPayload) => {
 
@@ -461,6 +457,7 @@ export class RestSocketRequest<T = Record<string, unknown>> {
 export class RestSocketResponse {
     socket: SocketIO.Socket
     done: (data: RestSocketResponsePayload) => void
+    code: number;
 
     constructor(
         socket: RestSocketResponse['socket'],
@@ -468,25 +465,43 @@ export class RestSocketResponse {
     ) {
         this.done = done
         this.socket = socket
+        this.code = 200
+    }
+
+    // TODO - Inaccurate way to determine if response is okay
+    isOk(): boolean {
+        return this.code < 400
     }
 
     end(): void {
+        this.done({
+            code: this.code,
+            ok: this.isOk()
+        })
         return;
     }
 
-    json(data: Record<string, unknown>): void {
+    json(data?: Record<string, unknown>): void {
+        this.done({
+            code: this.code,
+            ok: this.isOk(),
+            data
+        })
         return;
     }
 
     status(code: number): RestSocketResponse {
+        this.code = code
         return this;
     }
 
     cookie(): RestSocketResponse {
+        throw Error('Not implemented')
         return;
     }
 
     clearCookie(): RestSocketResponse {
+        throw Error('Not implemented')
         return;
     }
 

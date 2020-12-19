@@ -67,8 +67,9 @@ export type RestSocketRequestData<T> = {
 }
 
 export type RestSocketResponsePayload = {
-    [key: string]: any,
-    code: () => number
+    data?: Record<string, unknown>,
+    ok: boolean,
+    code: number,
 }
 
 export type MiddlewareQueueItem = {
